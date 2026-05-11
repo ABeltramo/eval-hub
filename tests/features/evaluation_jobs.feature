@@ -480,7 +480,6 @@ Feature: Evaluation Jobs
     When I send a DELETE request to "/api/v1/evaluations/collections/{{value:collection_id}}"
     Then the response code should be 204
 
-  @gha-wheel-sanity
   Scenario: Create an evaluation job and wait for completion
     Given the service is running
     When I send a POST request to "/api/v1/evaluations/jobs" with body "file:/evaluation_job_with_auth.json"
