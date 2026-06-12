@@ -245,10 +245,22 @@ func TestGetOrCreateExperimentID(t *testing.T) {
 	t.Run("creates experiment when missing", func(t *testing.T) {
 		t.Parallel()
 		var createBody mlflowclient.CreateExperimentRequest
+		var getCalls int
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/api/2.0/mlflow/experiments/get-by-name":
-				http.Error(w, `{"error_code":"RESOURCE_DOES_NOT_EXIST","message":"not found"}`, http.StatusNotFound)
+				getCalls++
+				if getCalls == 1 {
+					http.Error(w, `{"error_code":"RESOURCE_DOES_NOT_EXIST","message":"not found"}`, http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(mlflowclient.GetExperimentResponse{
+					Experiment: mlflowclient.Experiment{
+						ExperimentID:   "new-exp",
+						Name:           "demo",
+						LifecycleStage: "active",
+					},
+				})
 			case "/api/2.0/mlflow/experiments/create":
 				if err := json.NewDecoder(r.Body).Decode(&createBody); err != nil {
 					t.Errorf("decode create body: %v", err)
@@ -282,6 +294,9 @@ func TestGetOrCreateExperimentID(t *testing.T) {
 		}
 		if !foundJobTag {
 			t.Fatal("expected evaluation_job_id tag on create request")
+		}
+		if getCalls != 2 {
+			t.Fatalf("getCalls = %d, want 2", getCalls)
 		}
 	})
 
