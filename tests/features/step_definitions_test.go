@@ -25,12 +25,14 @@ import (
 	"github.com/Jeffail/gabs/v2"
 	"github.com/PaesslerAG/jsonpath"
 	"github.com/eval-hub/eval-hub/internal/eval_hub/config"
+	"github.com/eval-hub/eval-hub/internal/eval_hub/metrics"
 	"github.com/eval-hub/eval-hub/internal/eval_hub/mlflow"
 	"github.com/eval-hub/eval-hub/internal/eval_hub/runtimes"
 	"github.com/eval-hub/eval-hub/internal/eval_hub/server"
 	"github.com/eval-hub/eval-hub/internal/eval_hub/storage"
 	"github.com/eval-hub/eval-hub/internal/eval_hub/validation"
 	"github.com/eval-hub/eval-hub/internal/logging"
+	"github.com/eval-hub/eval-hub/internal/otel"
 	"github.com/eval-hub/eval-hub/internal/testhelpers"
 	pkgapi "github.com/eval-hub/eval-hub/pkg/api"
 	"github.com/xeipuuv/gojsonschema"
@@ -72,6 +74,7 @@ type apiFeature struct {
 	metricsBaseURL *url.URL
 	server         *server.Server
 	httpServer     *http.Server
+	metricsServer  *server.MetricsServer
 	client         *http.Client
 }
 
@@ -260,6 +263,20 @@ func createApiFeature() (*apiFeature, error) {
 	return api, nil
 }
 
+// ensureFVTOTELConfig enables OTEL metrics export for embedded FVT servers when Prometheus
+// scraping is configured. HTTP request duration is collected by otelhttp.
+func ensureFVTOTELConfig(serviceConfig *config.Config) {
+	if serviceConfig == nil || !serviceConfig.IsPrometheusEnabled() {
+		return
+	}
+	if serviceConfig.OTEL == nil {
+		serviceConfig.OTEL = &config.OTELConfig{}
+	}
+	serviceConfig.OTEL.Enabled = true
+	serviceConfig.OTEL.EnableMetrics = true
+	serviceConfig.OTEL.ExporterType = otel.ExporterTypeStdout
+}
+
 func (a *apiFeature) startLocalServer(port int) error {
 	logger, _, err := logging.NewLogger()
 	if err != nil {
@@ -306,7 +323,26 @@ func (a *apiFeature) startLocalServer(port int) error {
 		return logError(fmt.Errorf("failed to load collection configs: %w", err))
 	}
 
-	storage, err := storage.NewStorage(serviceConfig.Database, collectionConfigs, providerConfigs, serviceConfig.IsOTELStorageScansEnabled(), logger)
+	ensureFVTOTELConfig(serviceConfig)
+	if serviceConfig.IsOTELEnabled() {
+		if _, err := otel.SetupOTEL(context.Background(), serviceConfig.OTEL, logger, serviceConfig.IsPrometheusEnabled()); err != nil {
+			return logError(fmt.Errorf("failed to setup OTEL: %w", err))
+		}
+	}
+	if serviceConfig.IsOTELMetricsEnabled() {
+		if err := metrics.Init(); err != nil {
+			return logError(fmt.Errorf("failed to initialize OTEL metrics: %w", err))
+		}
+	}
+
+	storage, err := storage.NewStorage(
+		serviceConfig.Database,
+		collectionConfigs,
+		providerConfigs,
+		serviceConfig.IsOTELStorageScansEnabled(),
+		serviceConfig.IsOTELMetricsEnabled(),
+		logger,
+	)
 	if err != nil {
 		return logError(fmt.Errorf("failed to create storage: %w", err))
 	}
@@ -349,10 +385,24 @@ func (a *apiFeature) startLocalServer(port int) error {
 		a.httpServer.Serve(listener)
 	}()
 
+	if serviceConfig.IsPrometheusEnabled() {
+		a.metricsServer = server.NewMetricsServer(logger, serviceConfig.Prometheus)
+		go func() {
+			if err := a.metricsServer.Start(); err != nil {
+				logger.Error("Metrics server failed", "error", err.Error())
+			}
+		}()
+	}
+
 	return nil
 }
 
 func (a *apiFeature) cleanup(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+	if a.metricsServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.metricsServer.Shutdown(shutdownCtx)
+		cancel()
+	}
 	if a.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
