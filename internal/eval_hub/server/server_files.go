@@ -13,7 +13,10 @@ import (
 
 // handle termination messages
 
-func GetTerminationFile(conf *config.Config, logger *slog.Logger) string {
+func GetTerminationFile(conf *config.Config, localMode bool, logger *slog.Logger) string {
+	if localMode {
+		return ""
+	}
 	tf := ""
 	if (conf != nil) && (conf.Service != nil) {
 		tf = strings.TrimSpace(conf.Service.TerminationFile)
@@ -52,5 +55,15 @@ func writeFile(fname string, message string, fileType string, logger *slog.Logge
 }
 
 func SetTerminationMessage(terminationFile string, message string, logger *slog.Logger) error {
+	if terminationFile == "" {
+		return nil
+	}
 	return writeFile(terminationFile, message, "termination", logger)
+}
+
+func HandleStartupFailure(conf *config.Config, localMode bool, err error, msg string, logger *slog.Logger) {
+	termErr := SetTerminationMessage(GetTerminationFile(conf, localMode, logger), fmt.Sprintf("%s: %s", msg, err.Error()), logger)
+	if termErr != nil {
+		logger.Error("Failed to set termination message", "message", msg, "error", termErr.Error())
+	}
 }
