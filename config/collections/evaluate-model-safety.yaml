@@ -24,7 +24,6 @@ benchmarks:
     pass_criteria:
       threshold: 0.85
     parameters:
-      intents_s3_key: "s3://mlpipeline/evalhub-garak-kfp/dataset/intents.csv"
       disable_cache: false
       garak_config:
         system:
